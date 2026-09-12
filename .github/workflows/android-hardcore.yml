@@ -19,8 +19,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Your repository currently contains the complete project as a ZIP.
-      # Extract it before doing anything else.
+      # Extract the project ZIP that is stored in the repository.
       - name: Extract Hardcore source
         shell: bash
         run: |
@@ -29,25 +28,28 @@ jobs:
           test -f "PvZ-Hardcore-GitHub-Ready.zip"
 
           rm -rf extracted
-          mkdir extracted
+          mkdir -p extracted
 
           unzip -q "PvZ-Hardcore-GitHub-Ready.zip" -d extracted
 
           if [ -d "extracted/PvZ-Hardcore" ]; then
             cp -a extracted/PvZ-Hardcore/. .
           else
-            echo "PvZ-Hardcore directory was not found in the ZIP."
-            find extracted -maxdepth 2 -type d -print
+            echo "ERROR: PvZ-Hardcore directory was not found in ZIP."
+            find extracted -maxdepth 3 -type d -print
             exit 1
           fi
 
-          echo "Project root:"
+          echo "===== PROJECT ROOT ====="
           ls -la
 
+          echo "===== CHECKING PROJECT ====="
           test -d android
           test -d src
           test -f CMakeLists.txt
           test -f vcpkg.json
+
+          echo "Project looks valid."
 
       - name: Set up Java 21
         uses: actions/setup-java@v4
@@ -58,46 +60,101 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android NDK
-        shell: bash
-        run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platform-tools" \
-                     "platforms;android-${ANDROID_API}" \
-                     "build-tools;35.0.0" \
-                     "ndk;${ANDROID_NDK_VERSION}"
-
-          echo "ANDROID_NDK=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
-
-      - name: Install host dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ninja-build \
-            pkg-config \
-            unzip
-
-      - name: Set up vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgJsonGlob: vcpkg.json
-
-      - name: Show vcpkg information
-        run: |
-          "$VCPKG_ROOT/vcpkg" version
-          echo "VCPKG_ROOT=$VCPKG_ROOT"
-
-      - name: Install Android dependencies with vcpkg
+      - name: Install Android SDK components
         shell: bash
         run: |
           set -e
 
+          yes | sdkmanager --licenses >/dev/null || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-${ANDROID_API}" \
+            "build-tools;35.0.0" \
+            "ndk;${ANDROID_NDK_VERSION}"
+
+          echo "ANDROID_NDK=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Install host build tools
+        shell: bash
+        run: |
+          set -e
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            ninja-build \
+            pkg-config \
+            unzip \
+            curl \
+            git
+
+      # ------------------------------------------------------------
+      # vcpkg
+      #
+      # We intentionally do NOT use lukka/run-vcpkg.
+      # That action was failing because the manifest does not contain
+      # a builtin-baseline.
+      # ------------------------------------------------------------
+      - name: Download and bootstrap vcpkg
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf "$GITHUB_WORKSPACE/vcpkg"
+
+          git clone \
+            --depth 1 \
+            https://github.com/microsoft/vcpkg.git \
+            "$GITHUB_WORKSPACE/vcpkg"
+
+          "$GITHUB_WORKSPACE/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+
+          echo "VCPKG_ROOT=$GITHUB_WORKSPACE/vcpkg" >> "$GITHUB_ENV"
+          echo "$GITHUB_WORKSPACE/vcpkg" >> "$GITHUB_PATH"
+
+          echo "===== VCPKG VERSION ====="
+          "$GITHUB_WORKSPACE/vcpkg/vcpkg" version
+
+      - name: Configure Android vcpkg environment
+        shell: bash
+        run: |
+          set -e
+
+          echo "VCPKG_DEFAULT_TRIPLET=arm64-android" >> "$GITHUB_ENV"
+          echo "VCPKG_DEFAULT_HOST_TRIPLET=x64-linux" >> "$GITHUB_ENV"
+
+          echo "VCPKG_FORCE_SYSTEM_BINARIES=1" >> "$GITHUB_ENV"
+
+      - name: Install PvZ native dependencies
+        shell: bash
+        run: |
+          set -e
+
+          cd "$GITHUB_WORKSPACE"
+
           "$VCPKG_ROOT/vcpkg" install \
             --triplet arm64-android \
-            --x-manifest-root="$GITHUB_WORKSPACE" \
-            --debug
+            --host-triplet x64-linux
 
+      - name: Show installed vcpkg libraries
+        shell: bash
+        run: |
+          set -e
+
+          echo "===== VCPKG INSTALLED ====="
+
+          find "$GITHUB_WORKSPACE/vcpkg_installed" \
+            -maxdepth 4 \
+            -type f \
+            \( -name "*.so" -o -name "*.a" \) \
+            | sort \
+            | head -200 || true
+
+      # ------------------------------------------------------------
+      # SDL2
+      # ------------------------------------------------------------
       - name: Download SDL2
         shell: bash
         run: |
@@ -105,20 +162,28 @@ jobs:
 
           mkdir -p external
 
-          SDL2_TAG="2.32.10"
+          SDL2_VERSION="2.32.10"
 
-          wget -q \
-            "https://github.com/libsdl-org/SDL/releases/download/release-${SDL2_TAG}/SDL2-${SDL2_TAG}.tar.gz"
+          curl -L \
+            --fail \
+            --retry 5 \
+            --retry-delay 3 \
+            -o "SDL2-${SDL2_VERSION}.tar.gz" \
+            "https://github.com/libsdl-org/SDL/releases/download/release-${SDL2_VERSION}/SDL2-${SDL2_VERSION}.tar.gz"
 
-          tar -xzf "SDL2-${SDL2_TAG}.tar.gz"
-          mv "SDL2-${SDL2_TAG}" external/SDL
+          tar -xzf "SDL2-${SDL2_VERSION}.tar.gz"
+
+          rm -rf external/SDL
+          mv "SDL2-${SDL2_VERSION}" external/SDL
 
       - name: Build SDL2 shared library
         shell: bash
         run: |
           set -e
 
-          cmake -S external/SDL -B build-sdl2 \
+          cmake \
+            -S external/SDL \
+            -B build-sdl2 \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
@@ -126,13 +191,21 @@ jobs:
             -DANDROID_PLATFORM="android-${ANDROID_API}" \
             -DSDL_SHARED=ON \
             -DSDL_STATIC=OFF \
+            -DSDL_TESTS=OFF \
             -DSDL_TEST=OFF \
             -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/sdl2-android"
 
-          cmake --build build-sdl2 --parallel
-          cmake --install build-sdl2
+          cmake \
+            --build build-sdl2 \
+            --parallel
 
-      - name: Build PvZ Hardcore native library
+          cmake \
+            --install build-sdl2
+
+      # ------------------------------------------------------------
+      # PvZ native CMake build
+      # ------------------------------------------------------------
+      - name: Configure PvZ Hardcore
         shell: bash
         run: |
           set -e
@@ -140,7 +213,11 @@ jobs:
           ABI="arm64-v8a"
           BUILD_DIR="build-android-${ABI}"
 
-          cmake -S . -B "$BUILD_DIR" \
+          rm -rf "$BUILD_DIR"
+
+          cmake \
+            -S . \
+            -B "$BUILD_DIR" \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
@@ -152,156 +229,134 @@ jobs:
             -DANDROID_PLATFORM="android-${ANDROID_API}" \
             -DSDL2_DIR="$GITHUB_WORKSPACE/sdl2-android/lib/cmake/SDL2"
 
-          cmake --build "$BUILD_DIR" --parallel
+      - name: Build PvZ Hardcore native library
+        shell: bash
+        run: |
+          set -e
 
-      - name: Prepare native libraries
+          cmake \
+            --build build-android-arm64-v8a \
+            --parallel
+
+      # ------------------------------------------------------------
+      # Copy .so files into Android project
+      # ------------------------------------------------------------
+      - name: Prepare JNI libraries
         shell: bash
         run: |
           set -e
 
           ABI="arm64-v8a"
-          BUILD_DIR="build-android-${ABI}"
           JNI_DIR="android/app/src/main/jniLibs/${ABI}"
 
           mkdir -p "$JNI_DIR"
 
-          # Main PvZ library
-          cp -L "$BUILD_DIR/libmain.so" "$JNI_DIR/"
+          echo "===== MAIN LIBRARY ====="
 
-          # SDL2
+          MAIN_LIB="build-android-arm64-v8a/libmain.so"
+
+          if [ ! -f "$MAIN_LIB" ]; then
+            echo "ERROR: libmain.so was not produced."
+            find build-android-arm64-v8a \
+              -type f \
+              -name "*.so" \
+              -print
+            exit 1
+          fi
+
+          cp -L "$MAIN_LIB" "$JNI_DIR/"
+
+          echo "===== SDL2 LIBRARIES ====="
+
           find "$GITHUB_WORKSPACE/sdl2-android" \
             -type f \
             -name "libSDL2*.so" \
             -exec cp -L {} "$JNI_DIR/" \;
 
-          # vcpkg runtime libraries
-          VCPKG_LIB="$BUILD_DIR/vcpkg_installed/arm64-android/lib"
+          echo "===== VCPKG LIBRARIES ====="
 
-          if [ -d "$VCPKG_LIB" ]; then
-            find "$VCPKG_LIB" \
+          VCPKG_LIB_DIR="$GITHUB_WORKSPACE/vcpkg_installed/arm64-android/lib"
+
+          if [ -d "$VCPKG_LIB_DIR" ]; then
+            find "$VCPKG_LIB_DIR" \
               -maxdepth 1 \
               -type f \
               -name "*.so" \
               -exec cp -L {} "$JNI_DIR/" \;
           fi
 
-          echo "Native libraries:"
+          echo "===== JNI DIRECTORY ====="
           ls -lah "$JNI_DIR"
 
-      - name: Set Android SDK path
+      # ------------------------------------------------------------
+      # Android Gradle build
+      # ------------------------------------------------------------
+      - name: Configure Android SDK path
         shell: bash
         run: |
+          set -e
+
           echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+
+          cat android/local.properties
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build APK
+      - name: Build release APK
         working-directory: android
         shell: bash
         run: |
           set -e
 
-          gradle wrapper --gradle-version 8.12
+          gradle wrapper \
+            --gradle-version 8.12
+
           chmod +x gradlew
 
           ./gradlew assembleRelease \
             -PusePrebuiltLibs=true \
-            --no-daemon
+            --no-daemon \
+            --stacktrace
 
-      - name: Collect APK
+      # ------------------------------------------------------------
+      # Collect APK
+      # ------------------------------------------------------------
+      - name: Find and collect APK
         shell: bash
         run: |
           set -e
 
           mkdir -p dist
 
-          APK="$(find android -type f -name '*.apk' -path '*/release/*' | head -n 1)"
+          echo "===== APK FILES ====="
+
+          find android \
+            -type f \
+            -name "*.apk" \
+            -print
+
+          APK="$(find android \
+            -type f \
+            -name "*.apk" \
+            -path "*/release/*" \
+            | head -n 1)"
 
           if [ -z "$APK" ]; then
-            echo "No release APK was produced."
-            find android -type f -name "*.apk" -print
+            echo "ERROR: No release APK was produced."
             exit 1
           fi
 
-          cp "$APK" "dist/pvz-hardcore-android-arm64-v8a.apk"
+          cp "$APK" \
+            "dist/pvz-hardcore-android-arm64-v8a.apk"
 
-          ls -lh dist/
+          echo "===== FINAL APK ====="
+          ls -lh \
+            "dist/pvz-hardcore-android-arm64-v8a.apk"
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: pvz-hardcore-android-arm64-v8a
-          path: dist/pvz-hardcore-android-arm64-v8a.apk            "platforms;android-36" \
-            "build-tools;36.0.0" \
-            "cmake;3.22.1" \
-            "ndk;27.0.12077973"
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build
-
-      - name: Download SDL2
-        run: |
-          mkdir -p external
-          git clone --depth 1 --branch release-2.32.10 \
-            https://github.com/libsdl-org/SDL.git external/SDL
-
-      - name: Build SDL2
-        run: |
-          export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.0.12077973"
-
-          cmake -S external/SDL -B build-sdl \
-            -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-24 \
-            -DSDL_SHARED=ON \
-            -DSDL_STATIC=OFF
-
-          cmake --build build-sdl --parallel
-
-      - name: Build PvZ Hardcore native library
-        run: |
-          export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.0.12077973"
-
-          cmake -S . -B build-android \
-            -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-24 \
-            -DCMAKE_BUILD_TYPE=Release
-
-          cmake --build build-android --parallel
-
-      - name: Prepare Android libraries
-        run: |
-          mkdir -p android/app/src/main/jniLibs/arm64-v8a
-
-          find build-android -name "libmain.so" \
-            -exec cp {} android/app/src/main/jniLibs/arm64-v8a/ \;
-
-          find build-sdl -name "libSDL2.so" \
-            -exec cp {} android/app/src/main/jniLibs/arm64-v8a/ \;
-
-          ls -lah android/app/src/main/jniLibs/arm64-v8a
-
-      - name: Build Android APK
-        working-directory: android
-        run: |
-          gradle wrapper --gradle-version 8.12
-          chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
-
-      - name: Collect APK
-        run: |
-          mkdir -p dist
-          find android -type f -name "*.apk" -exec cp {} dist/pvz-hardcore-android-arm64-v8a.apk \;
-          ls -lh dist/
-
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: pvz-hardcore-android-arm64-v8a
           path: dist/pvz-hardcore-android-arm64-v8a.apk
+          if-no-files-found: error
