@@ -11,49 +11,99 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      - name: Extract PvZ Hardcore source
+        run: |
+          unzip -q "PvZ-Hardcore-GitHub-Ready.zip" -d extracted
+          cp -a extracted/PvZ-Hardcore/. .
+          test -d android
+          test -d src
+          test -f CMakeLists.txt
+
+      - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: "21"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android tools
+      - name: Install Android SDK components
         run: |
-          sdkmanager "platforms;android-36" \
+          sdkmanager "platform-tools" \
+            "platforms;android-36" \
             "build-tools;36.0.0" \
             "cmake;3.22.1" \
             "ndk;27.0.12077973"
 
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build
 
       - name: Download SDL2
         run: |
+          mkdir -p external
           git clone --depth 1 --branch release-2.32.10 \
             https://github.com/libsdl-org/SDL.git external/SDL
 
-      - name: Build
+      - name: Build SDL2
         run: |
-          chmod +x gradlew 2>/dev/null || true
-          cd android
-          gradle wrapper --gradle-version 8.12
-          ./gradlew assembleRelease -PusePrebuiltLibs=true --no-daemon
+          export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.0.12077973"
 
-      - name: Find APK
+          cmake -S external/SDL -B build-sdl \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DSDL_SHARED=ON \
+            -DSDL_STATIC=OFF
+
+          cmake --build build-sdl --parallel
+
+      - name: Build PvZ Hardcore native library
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/27.0.12077973"
+
+          cmake -S . -B build-android \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release
+
+          cmake --build build-android --parallel
+
+      - name: Prepare Android libraries
+        run: |
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+
+          find build-android -name "libmain.so" \
+            -exec cp {} android/app/src/main/jniLibs/arm64-v8a/ \;
+
+          find build-sdl -name "libSDL2.so" \
+            -exec cp {} android/app/src/main/jniLibs/arm64-v8a/ \;
+
+          ls -lah android/app/src/main/jniLibs/arm64-v8a
+
+      - name: Build Android APK
+        working-directory: android
+        run: |
+          gradle wrapper --gradle-version 8.12
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Collect APK
         run: |
           mkdir -p dist
-          find android -name "*.apk" -exec cp {} dist/pvz-hardcore-android.apk \;
+          find android -type f -name "*.apk" -exec cp {} dist/pvz-hardcore-android-arm64-v8a.apk \;
+          ls -lh dist/
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: pvz-hardcore-android
-          path: dist/pvz-hardcore-android.apk
+          name: pvz-hardcore-android-arm64-v8a
+          path: dist/pvz-hardcore-android-arm64-v8a.apk
