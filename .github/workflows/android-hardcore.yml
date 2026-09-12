@@ -1,0 +1,59 @@
+name: Build PvZ Hardcore Android
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android tools
+        run: |
+          sdkmanager "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "cmake;3.22.1" \
+            "ndk;27.0.12077973"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Download SDL2
+        run: |
+          git clone --depth 1 --branch release-2.32.10 \
+            https://github.com/libsdl-org/SDL.git external/SDL
+
+      - name: Build
+        run: |
+          chmod +x gradlew 2>/dev/null || true
+          cd android
+          gradle wrapper --gradle-version 8.12
+          ./gradlew assembleRelease -PusePrebuiltLibs=true --no-daemon
+
+      - name: Find APK
+        run: |
+          mkdir -p dist
+          find android -name "*.apk" -exec cp {} dist/pvz-hardcore-android.apk \;
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: pvz-hardcore-android
+          path: dist/pvz-hardcore-android.apk
