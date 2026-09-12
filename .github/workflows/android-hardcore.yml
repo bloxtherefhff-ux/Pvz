@@ -11,7 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ANDROID_API: "36"
+  ANDROID_COMPILE_API: "36"
+  ANDROID_NATIVE_API: "35"
   ANDROID_NDK_VERSION: "27.0.12077973"
   CMAKE_VERSION: "3.22.1"
   BUILD_TOOLS_VERSION: "36.0.0"
@@ -35,7 +36,7 @@ jobs:
           fetch-depth: 0
 
       # =========================================================
-      # 2. EXTRACT THE HARDCORE ZIP
+      # 2. EXTRACT HARDCORE ZIP
       # =========================================================
 
       - name: Extract Hardcore source
@@ -47,7 +48,6 @@ jobs:
 
           if [ ! -f "$ZIP_FILE" ]; then
             echo "ERROR: $ZIP_FILE was not found."
-            echo
             find . -maxdepth 2 -type f | sort
             exit 1
           fi
@@ -95,9 +95,13 @@ jobs:
 
           yes | sdkmanager --licenses >/dev/null || true
 
+          # API 36 is for the Android Gradle project.
+          # API 35 is used by the NDK/CMake native build.
+
           sdkmanager \
             "platform-tools" \
-            "platforms;android-${ANDROID_API}" \
+            "platforms;android-${ANDROID_COMPILE_API}" \
+            "platforms;android-${ANDROID_NATIVE_API}" \
             "build-tools;${BUILD_TOOLS_VERSION}" \
             "cmake;${CMAKE_VERSION}" \
             "ndk;${ANDROID_NDK_VERSION}"
@@ -112,20 +116,16 @@ jobs:
           echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
           echo "ANDROID_CMAKE=$CMAKE_PATH" >> "$GITHUB_ENV"
 
-          # IMPORTANT:
-          # Put Android SDK CMake BEFORE GitHub's system CMake.
           echo "$CMAKE_PATH/bin" >> "$GITHUB_PATH"
 
           echo
-          echo "Android NDK:"
-          "$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version | head -1
-
-          echo
-          echo "Android SDK CMake:"
-          "$CMAKE_PATH/bin/cmake" --version
+          echo "Android compile API: $ANDROID_COMPILE_API"
+          echo "Android native API:  $ANDROID_NATIVE_API"
+          echo "NDK:                 $ANDROID_NDK_VERSION"
+          echo "CMake:               $CMAKE_VERSION"
 
       # =========================================================
-      # 5. VERIFY CMAKE
+      # 5. VERIFY BUILD TOOLS
       # =========================================================
 
       - name: Verify build tools
@@ -133,12 +133,7 @@ jobs:
         run: |
           set -e
 
-          echo "CMake being used:"
-          which cmake
-          cmake --version
-
-          echo
-          echo "Expected Android CMake:"
+          echo "CMake:"
           "$ANDROID_CMAKE/bin/cmake" --version
 
           echo
@@ -198,7 +193,7 @@ jobs:
           echo "SDL2 source ready."
 
       # =========================================================
-      # 8. REMOVE SDL'S OWN GRADLE WRAPPER
+      # 8. REMOVE SDL GRADLE WRAPPER
       # =========================================================
 
       - name: Remove SDL Gradle wrapper
@@ -268,7 +263,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM="android-${ANDROID_API}" \
+            -DANDROID_PLATFORM="android-${ANDROID_NATIVE_API}" \
             -DSDL_SHARED=ON \
             -DSDL_STATIC=OFF \
             -DSDL_TESTS=OFF \
@@ -287,11 +282,6 @@ jobs:
 
           echo
           echo "SDL2 build succeeded."
-
-          find "$GITHUB_WORKSPACE/sdl2-android" \
-            -type f \
-            -name "*.so" \
-            -print
 
       # =========================================================
       # 12. CONFIGURE PVZ
@@ -313,7 +303,7 @@ jobs:
             -DVCPKG_TARGET_TRIPLET=arm64-android \
             -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM="android-${ANDROID_API}" \
+            -DANDROID_PLATFORM="android-${ANDROID_NATIVE_API}" \
             -DSDL2_DIR="$GITHUB_WORKSPACE/sdl2-android/lib/cmake/SDL2"
 
       # =========================================================
@@ -353,18 +343,15 @@ jobs:
           rm -rf "$JNI_DIR"
           mkdir -p "$JNI_DIR"
 
-          # Main PvZ library
           cp -L \
             "$GITHUB_WORKSPACE/build-android-arm64-v8a/libmain.so" \
             "$JNI_DIR/libmain.so"
 
-          # SDL2 libraries
           find "$GITHUB_WORKSPACE/sdl2-android" \
             -type f \
             -name "libSDL2*.so" \
             -exec cp -L {} "$JNI_DIR/" \;
 
-          # vcpkg libraries
           VCPKG_LIB="$GITHUB_WORKSPACE/vcpkg_installed/arm64-android/lib"
 
           if [ -d "$VCPKG_LIB" ]; then
