@@ -25,18 +25,18 @@ jobs:
 
     steps:
 
-      # ---------------------------------------------------------
-      # 1. Checkout repository
-      # ---------------------------------------------------------
+      # =========================================================
+      # 1. CHECKOUT
+      # =========================================================
 
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ---------------------------------------------------------
-      # 2. Extract the Hardcore ZIP
-      # ---------------------------------------------------------
+      # =========================================================
+      # 2. EXTRACT THE HARDCORE ZIP
+      # =========================================================
 
       - name: Extract Hardcore source
         shell: bash
@@ -48,7 +48,6 @@ jobs:
           if [ ! -f "$ZIP_FILE" ]; then
             echo "ERROR: $ZIP_FILE was not found."
             echo
-            echo "Repository files:"
             find . -maxdepth 2 -type f | sort
             exit 1
           fi
@@ -58,26 +57,23 @@ jobs:
           unzip -q "$ZIP_FILE" -d extracted
 
           if [ ! -d "extracted/PvZ-Hardcore" ]; then
-            echo "ERROR: PvZ-Hardcore folder was not found inside the ZIP."
-            echo
+            echo "ERROR: PvZ-Hardcore folder was not found inside ZIP."
             find extracted -maxdepth 3 -type f | sort | head -200
             exit 1
           fi
 
           cp -a extracted/PvZ-Hardcore/. .
 
-          echo
-          echo "Hardcore source extracted successfully."
-          echo
-
           test -d android
           test -d src
           test -f CMakeLists.txt
           test -f vcpkg.json
 
-      # ---------------------------------------------------------
-      # 3. Java 21
-      # ---------------------------------------------------------
+          echo "Hardcore source extracted successfully."
+
+      # =========================================================
+      # 3. JAVA 21
+      # =========================================================
 
       - name: Set up Java 21
         uses: actions/setup-java@v4
@@ -85,9 +81,9 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      # ---------------------------------------------------------
-      # 4. Android SDK
-      # ---------------------------------------------------------
+      # =========================================================
+      # 4. ANDROID SDK
+      # =========================================================
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -107,17 +103,55 @@ jobs:
             "ndk;${ANDROID_NDK_VERSION}"
 
           NDK_PATH="$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}"
+          CMAKE_PATH="$ANDROID_HOME/cmake/${CMAKE_VERSION}"
 
           test -d "$NDK_PATH"
+          test -x "$CMAKE_PATH/bin/cmake"
 
           echo "ANDROID_NDK=$NDK_PATH" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_CMAKE=$CMAKE_PATH" >> "$GITHUB_ENV"
 
-          echo "ANDROID_NDK=$NDK_PATH"
+          # IMPORTANT:
+          # Put Android SDK CMake BEFORE GitHub's system CMake.
+          echo "$CMAKE_PATH/bin" >> "$GITHUB_PATH"
 
-      # ---------------------------------------------------------
-      # 5. Host build tools
-      # ---------------------------------------------------------
+          echo
+          echo "Android NDK:"
+          "$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version | head -1
+
+          echo
+          echo "Android SDK CMake:"
+          "$CMAKE_PATH/bin/cmake" --version
+
+      # =========================================================
+      # 5. VERIFY CMAKE
+      # =========================================================
+
+      - name: Verify build tools
+        shell: bash
+        run: |
+          set -e
+
+          echo "CMake being used:"
+          which cmake
+          cmake --version
+
+          echo
+          echo "Expected Android CMake:"
+          "$ANDROID_CMAKE/bin/cmake" --version
+
+          echo
+          echo "NDK:"
+          echo "$ANDROID_NDK"
+
+          echo
+          echo "Java:"
+          java -version
+
+      # =========================================================
+      # 6. HOST TOOLS
+      # =========================================================
 
       - name: Install host tools
         shell: bash
@@ -133,16 +167,9 @@ jobs:
             curl \
             git
 
-      # ---------------------------------------------------------
-      # 6. Download SDL2
-      #
-      # IMPORTANT:
-      # The Android Gradle project expects:
-      #
-      # sdl2-src/android-project/app/src/main/java
-      #
-      # so SDL MUST live in sdl2-src.
-      # ---------------------------------------------------------
+      # =========================================================
+      # 7. DOWNLOAD SDL2
+      # =========================================================
 
       - name: Download SDL2
         shell: bash
@@ -165,23 +192,14 @@ jobs:
 
           mv "SDL2-${SDL2_VERSION}" sdl2-src
 
-          echo
-          echo "SDL2 source:"
-          test -d sdl2-src/android-project/app/src/main/java
-          echo "SDL Android Java sources found."
+          test -d \
+            sdl2-src/android-project/app/src/main/java
 
-          echo
-          find sdl2-src/android-project/app/src/main/java \
-            -maxdepth 3 \
-            -type f \
-            | head -30
+          echo "SDL2 source ready."
 
-      # ---------------------------------------------------------
-      # 7. Remove SDL's unrelated Gradle wrapper
-      #
-      # This is NOT the PvZ Android wrapper.
-      # It belongs to SDL's sample Android project.
-      # ---------------------------------------------------------
+      # =========================================================
+      # 8. REMOVE SDL'S OWN GRADLE WRAPPER
+      # =========================================================
 
       - name: Remove SDL Gradle wrapper
         shell: bash
@@ -194,9 +212,9 @@ jobs:
 
           echo "SDL Gradle wrapper removed."
 
-      # ---------------------------------------------------------
-      # 8. Set up vcpkg manually
-      # ---------------------------------------------------------
+      # =========================================================
+      # 9. VCPKG
+      # =========================================================
 
       - name: Set up vcpkg
         shell: bash
@@ -217,9 +235,9 @@ jobs:
 
           "$GITHUB_WORKSPACE/vcpkg/vcpkg" version
 
-      # ---------------------------------------------------------
-      # 9. Install native dependencies
-      # ---------------------------------------------------------
+      # =========================================================
+      # 10. NATIVE DEPENDENCIES
+      # =========================================================
 
       - name: Install native dependencies
         shell: bash
@@ -231,9 +249,9 @@ jobs:
           "$VCPKG_ROOT/vcpkg" install \
             --triplet arm64-android
 
-      # ---------------------------------------------------------
-      # 10. Build SDL2 shared library
-      # ---------------------------------------------------------
+      # =========================================================
+      # 11. BUILD SDL2
+      # =========================================================
 
       - name: Build SDL2
         shell: bash
@@ -243,7 +261,7 @@ jobs:
           rm -rf build-sdl2
           rm -rf sdl2-android
 
-          cmake \
+          "$ANDROID_CMAKE/bin/cmake" \
             -S sdl2-src \
             -B build-sdl2 \
             -G Ninja \
@@ -257,24 +275,27 @@ jobs:
             -DSDL_TEST=OFF \
             -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/sdl2-android"
 
-          cmake \
+          "$ANDROID_CMAKE/bin/cmake" \
             --build build-sdl2 \
             --parallel
 
-          cmake \
+          "$ANDROID_CMAKE/bin/cmake" \
             --install build-sdl2
 
           test -f \
             "$GITHUB_WORKSPACE/sdl2-android/lib/cmake/SDL2/SDL2Config.cmake"
+
+          echo
+          echo "SDL2 build succeeded."
 
           find "$GITHUB_WORKSPACE/sdl2-android" \
             -type f \
             -name "*.so" \
             -print
 
-      # ---------------------------------------------------------
-      # 11. Configure hardcore PvZ native library
-      # ---------------------------------------------------------
+      # =========================================================
+      # 12. CONFIGURE PVZ
+      # =========================================================
 
       - name: Configure PvZ
         shell: bash
@@ -283,7 +304,7 @@ jobs:
 
           rm -rf build-android-arm64-v8a
 
-          cmake \
+          "$ANDROID_CMAKE/bin/cmake" \
             -S . \
             -B build-android-arm64-v8a \
             -G Ninja \
@@ -295,28 +316,31 @@ jobs:
             -DANDROID_PLATFORM="android-${ANDROID_API}" \
             -DSDL2_DIR="$GITHUB_WORKSPACE/sdl2-android/lib/cmake/SDL2"
 
-      # ---------------------------------------------------------
-      # 12. Build hardcore native library
-      # ---------------------------------------------------------
+      # =========================================================
+      # 13. BUILD PVZ
+      # =========================================================
 
       - name: Build PvZ
         shell: bash
         run: |
           set -e
 
-          cmake \
+          "$ANDROID_CMAKE/bin/cmake" \
             --build build-android-arm64-v8a \
             --parallel
 
-          test -f build-android-arm64-v8a/libmain.so
+          test -f \
+            build-android-arm64-v8a/libmain.so
 
           echo
           echo "PvZ native build succeeded."
-          ls -lh build-android-arm64-v8a/libmain.so
 
-      # ---------------------------------------------------------
-      # 13. Prepare Android JNI libraries
-      # ---------------------------------------------------------
+          ls -lh \
+            build-android-arm64-v8a/libmain.so
+
+      # =========================================================
+      # 14. PREPARE JNI LIBRARIES
+      # =========================================================
 
       - name: Prepare libraries
         shell: bash
@@ -329,18 +353,18 @@ jobs:
           rm -rf "$JNI_DIR"
           mkdir -p "$JNI_DIR"
 
-          # Main PvZ native library
+          # Main PvZ library
           cp -L \
             "$GITHUB_WORKSPACE/build-android-arm64-v8a/libmain.so" \
             "$JNI_DIR/libmain.so"
 
-          # SDL2
+          # SDL2 libraries
           find "$GITHUB_WORKSPACE/sdl2-android" \
             -type f \
             -name "libSDL2*.so" \
             -exec cp -L {} "$JNI_DIR/" \;
 
-          # vcpkg shared libraries
+          # vcpkg libraries
           VCPKG_LIB="$GITHUB_WORKSPACE/vcpkg_installed/arm64-android/lib"
 
           if [ -d "$VCPKG_LIB" ]; then
@@ -351,7 +375,6 @@ jobs:
               -exec cp -L {} "$JNI_DIR/" \;
           fi
 
-          # Verify main library
           test -f "$JNI_DIR/libmain.so"
 
           echo
@@ -363,12 +386,9 @@ jobs:
             -print \
             | sort
 
-          echo
-          ls -lh "$JNI_DIR"
-
-      # ---------------------------------------------------------
-      # 14. Configure Android Gradle project
-      # ---------------------------------------------------------
+      # =========================================================
+      # 15. CONFIGURE ANDROID PROJECT
+      # =========================================================
 
       - name: Configure Android project
         shell: bash
@@ -377,32 +397,18 @@ jobs:
 
           echo "sdk.dir=$ANDROID_HOME" > android/local.properties
 
-          echo "Android SDK:"
-          echo "$ANDROID_HOME"
-
-          echo
-          echo "Checking Android project..."
-
           test -f android/settings.gradle
           test -f android/build.gradle
           test -f android/app/build.gradle
 
-          echo "Android project files are present."
-
-          echo
-          echo "Checking SDLActivity source..."
-
           test -f \
             sdl2-src/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java
 
-          echo "SDLActivity.java found."
+          echo "Android project is ready."
 
-      # ---------------------------------------------------------
-      # 15. Install standalone Gradle
-      #
-      # No gradle/actions/setup-gradle.
-      # Therefore no wrapper validation of SDL.
-      # ---------------------------------------------------------
+      # =========================================================
+      # 16. INSTALL GRADLE
+      # =========================================================
 
       - name: Install Gradle
         shell: bash
@@ -430,9 +436,9 @@ jobs:
 
           "$RUNNER_TEMP/gradle-${GRADLE_VERSION}/bin/gradle" --version
 
-      # ---------------------------------------------------------
-      # 16. Generate PvZ Gradle wrapper + build APK
-      # ---------------------------------------------------------
+      # =========================================================
+      # 17. BUILD APK
+      # =========================================================
 
       - name: Build APK
         working-directory: android
@@ -452,9 +458,9 @@ jobs:
             --no-daemon \
             --stacktrace
 
-      # ---------------------------------------------------------
-      # 17. Find APK
-      # ---------------------------------------------------------
+      # =========================================================
+      # 18. COLLECT APK
+      # =========================================================
 
       - name: Collect APK
         shell: bash
@@ -474,7 +480,7 @@ jobs:
             echo "ERROR: Release APK was not created."
 
             echo
-            echo "All APK files:"
+            echo "APK files found:"
             find android \
               -type f \
               -name "*.apk" \
@@ -488,13 +494,13 @@ jobs:
             dist/pvz-hardcore-android-arm64-v8a.apk
 
           echo
-          echo "APK successfully created:"
+          echo "APK CREATED:"
           ls -lh \
             dist/pvz-hardcore-android-arm64-v8a.apk
 
-      # ---------------------------------------------------------
-      # 18. Upload APK
-      # ---------------------------------------------------------
+      # =========================================================
+      # 19. UPLOAD APK
+      # =========================================================
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
